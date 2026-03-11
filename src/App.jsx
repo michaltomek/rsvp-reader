@@ -72,15 +72,48 @@ async function extractEpubText(file, onProgress) {
   return fullText.replace(/\s+/g, " ").trim();
 }
 
-const SAMPLE_TEXT = `Sun Tzu said: The art of war is of vital importance to the State. It is a matter of life and death, a road either to safety or to ruin. Hence it is a subject of inquiry which can on no account be neglected. The art of war is governed by five constant factors: The Moral Law; Heaven; Earth; The Commander; Method and discipline. The Moral Law causes the people to be in complete accord with their ruler, so that they will follow him regardless of their lives, undismayed by any danger. Heaven signifies night and day, cold and heat, times and seasons. Earth comprises distances, great and small; danger and security; open ground and narrow passes; the chances of life and death. The Commander stands for the virtues of wisdom, sincerity, benevolence, courage and strictness. By method and discipline are to be understood the marshaling of the army in its proper subdivisions, the graduations of rank among the officers, the maintenance of roads by which supplies may reach the army, and the control of military expenditure. These five heads should be familiar to every general: he who knows them will be victorious; he who knows them not will fail.`;
+// Detect chapters from word array
+function detectChapters(words) {
+  const chapters = [];
+  const chapterPattern = /^(chapter|part|book|section|prologue|epilogue|introduction|preface|appendix)$/i;
+  const numberPattern = /^(\d+|[ivxlcdmIVXLCDM]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i;
+
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i].replace(/[^a-zA-Z]/g, "");
+    if (chapterPattern.test(word)) {
+      // Look ahead for a number or title
+      const nextWord = words[i + 1] ? words[i + 1].replace(/[^a-zA-Z0-9]/g, "") : "";
+      const isNumberNext = numberPattern.test(nextWord) || /^\d+$/.test(nextWord);
+      
+      let title = words[i];
+      if (isNumberNext) title += " " + words[i + 1];
+      // Grab up to 4 more words for subtitle
+      const extra = [];
+      const start = isNumberNext ? i + 2 : i + 1;
+      for (let j = start; j < Math.min(start + 5, words.length); j++) {
+        if (words[j] && words[j].length > 0) extra.push(words[j]);
+        else break;
+      }
+      if (extra.length > 0) title += ": " + extra.join(" ");
+      if (title.length > 50) title = title.slice(0, 50) + "…";
+
+      chapters.push({ wordIndex: i, title });
+    }
+  }
+  return chapters;
+}
+
+const SAMPLE_TEXT = `Prologue In the beginning there was nothing. Chapter One The art of war is of vital importance to the State. It is a matter of life and death, a road either to safety or to ruin. Hence it is a subject of inquiry which can on no account be neglected. The art of war is governed by five constant factors: The Moral Law; Heaven; Earth; The Commander; Method and discipline. Chapter Two The Moral Law causes the people to be in complete accord with their ruler, so that they will follow him regardless of their lives, undismayed by any danger. Heaven signifies night and day, cold and heat, times and seasons. Earth comprises distances, great and small; danger and security; open ground and narrow passes; the chances of life and death. Chapter Three The Commander stands for the virtues of wisdom, sincerity, benevolence, courage and strictness. By method and discipline are to be understood the marshaling of the army in its proper subdivisions, the graduations of rank among the officers, the maintenance of roads by which supplies may reach the army, and the control of military expenditure. These five heads should be familiar to every general: he who knows them will be victorious; he who knows them not will fail. Epilogue And so ends the teaching of Sun Tzu on the art of war.`;
 
 export default function RSVPReader() {
   const [text, setText] = useState(SAMPLE_TEXT);
   const [words, setWords] = useState([]);
+  const [chapters, setChapters] = useState([]);
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [wpm, setWpm] = useState(300);
   const [showSetup, setShowSetup] = useState(false);
+  const [showChapters, setShowChapters] = useState(false);
   const [inputText, setInputText] = useState("");
   const [flash, setFlash] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -89,6 +122,7 @@ export default function RSVPReader() {
   const [loadError, setLoadError] = useState("");
   const [bookTitle, setBookTitle] = useState("The Art of War — sample");
   const [dragging, setDragging] = useState(false);
+  const [currentChapter, setCurrentChapter] = useState(null);
   const intervalRef = useRef(null);
   const flashRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -98,7 +132,19 @@ export default function RSVPReader() {
     setWords(w);
     setIdx(0);
     setPlaying(false);
+    const detected = detectChapters(w);
+    setChapters(detected);
   }, [text]);
+
+  // Track current chapter as reading progresses
+  useEffect(() => {
+    if (chapters.length === 0) { setCurrentChapter(null); return; }
+    let current = null;
+    for (let i = chapters.length - 1; i >= 0; i--) {
+      if (idx >= chapters[i].wordIndex) { current = chapters[i]; break; }
+    }
+    setCurrentChapter(current);
+  }, [idx, chapters]);
 
   const advance = useCallback(() => {
     setIdx(prev => {
@@ -120,10 +166,11 @@ export default function RSVPReader() {
   }, [playing, wpm, advance]);
 
   const handleKeyDown = useCallback((e) => {
-    if (e.code === "Space" && !showSetup) { e.preventDefault(); setPlaying(p => !p); }
-    if (e.code === "ArrowRight") setIdx(p => Math.min(p + 1, words.length - 1));
-    if (e.code === "ArrowLeft") setIdx(p => Math.max(p - 1, 0));
-  }, [words.length, showSetup]);
+    if (e.code === "Space" && !showSetup && !showChapters) { e.preventDefault(); setPlaying(p => !p); }
+    if (e.code === "ArrowRight" && !showSetup) setIdx(p => Math.min(p + 1, words.length - 1));
+    if (e.code === "ArrowLeft" && !showSetup) setIdx(p => Math.max(p - 1, 0));
+    if (e.code === "Escape") { setShowSetup(false); setShowChapters(false); }
+  }, [words.length, showSetup, showChapters]);
 
   useEffect(() => {
     window.addEventListener("keydown", handleKeyDown);
@@ -206,20 +253,33 @@ export default function RSVPReader() {
       <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "18px 28px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <div style={{ fontSize: "10px", letterSpacing: "0.2em", textTransform: "uppercase", color: "#3a3530", fontFamily: "monospace" }}>RSVP Reader</div>
-          <div style={{ fontSize: "12px", color: "#6a6258", marginTop: "2px", maxWidth: "300px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bookTitle}</div>
+          <div style={{ fontSize: "12px", color: "#6a6258", marginTop: "2px", maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bookTitle}</div>
         </div>
-        <button onClick={() => { setShowSetup(true); setLoadError(""); }}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = ORP_COLOR; e.currentTarget.style.color = ORP_COLOR; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = "#2a2520"; e.currentTarget.style.color = "#8a7e6e"; }}
-          style={{ background: "none", border: "1px solid #2a2520", color: "#8a7e6e", padding: "6px 14px", cursor: "pointer", fontSize: "11px", letterSpacing: "0.15em", textTransform: "uppercase", fontFamily: "monospace", transition: "all 0.2s" }}>
-          Load Book
-        </button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          {chapters.length > 0 && (
+            <button onClick={() => setShowChapters(true)}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = ORP_COLOR; e.currentTarget.style.color = ORP_COLOR; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = "#2a2520"; e.currentTarget.style.color = "#8a7e6e"; }}
+              style={{ background: "none", border: "1px solid #2a2520", color: "#8a7e6e", padding: "6px 14px", cursor: "pointer", fontSize: "11px", letterSpacing: "0.15em", textTransform: "uppercase", fontFamily: "monospace", transition: "all 0.2s" }}>
+              Chapters ({chapters.length})
+            </button>
+          )}
+          <button onClick={() => { setShowSetup(true); setLoadError(""); }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = ORP_COLOR; e.currentTarget.style.color = ORP_COLOR; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#2a2520"; e.currentTarget.style.color = "#8a7e6e"; }}
+            style={{ background: "none", border: "1px solid #2a2520", color: "#8a7e6e", padding: "6px 14px", cursor: "pointer", fontSize: "11px", letterSpacing: "0.15em", textTransform: "uppercase", fontFamily: "monospace", transition: "all 0.2s" }}>
+            Load Book
+          </button>
+        </div>
       </div>
 
-      {/* Stats */}
-      <div style={{ position: "absolute", top: "68px", display: "flex", gap: "20px", fontSize: "10px", color: "#2e2c28", fontFamily: "monospace", letterSpacing: "0.1em" }}>
+      {/* Stats + current chapter */}
+      <div style={{ position: "absolute", top: "68px", display: "flex", gap: "20px", fontSize: "10px", color: "#2e2c28", fontFamily: "monospace", letterSpacing: "0.1em", alignItems: "center" }}>
         <span>{(idx + 1).toLocaleString()} / {words.length.toLocaleString()}</span>
         <span>~{minutesLeft}m left</span>
+        {currentChapter && (
+          <span style={{ color: "#3a3530" }}>· {currentChapter.title}</span>
+        )}
       </div>
 
       {/* Main */}
@@ -242,29 +302,16 @@ export default function RSVPReader() {
         {/* Controls */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px", width: "100%" }}>
           <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-            {[
-              { label: "«", action: () => setIdx(p => Math.max(0, p - 50)), title: "Back 50" },
-              { label: "‹", action: () => setIdx(p => Math.max(0, p - 1)) },
-            ].map((btn, i) => (
-              <button key={i} onClick={btn.action} title={btn.title} style={{ width: "38px", height: "38px", background: "none", border: "1px solid #2a2520", color: "#5a5248", fontSize: "18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>
-                {btn.label}
-              </button>
-            ))}
-            <button onClick={() => { setIdx(0); setPlaying(false); }} title="Restart" style={{ width: "34px", height: "34px", background: "none", border: "none", color: "#3a3530", fontSize: "15px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>↩</button>
+            <button onClick={() => setIdx(p => Math.max(0, p - 50))} title="Back 50" style={NAV}>«</button>
+            <button onClick={() => setIdx(p => Math.max(0, p - 1))} style={NAV}>‹</button>
+            <button onClick={() => { setIdx(0); setPlaying(false); }} title="Restart" style={ICON}>↩</button>
             <button onClick={() => setPlaying(p => !p)} style={{ width: "54px", height: "54px", borderRadius: "50%", background: playing ? "transparent" : ORP_COLOR, border: `2px solid ${playing ? ORP_COLOR : "transparent"}`, color: playing ? ORP_COLOR : "#0a0a0a", fontSize: "16px", cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", justifyContent: "center" }}>
               {playing ? "⏸" : "▶"}
             </button>
-            {[
-              { label: "›", action: () => setIdx(p => Math.min(words.length - 1, p + 1)) },
-              { label: "»", action: () => setIdx(p => Math.min(words.length - 1, p + 50)), title: "Forward 50" },
-            ].map((btn, i) => (
-              <button key={i} onClick={btn.action} title={btn.title} style={{ width: "38px", height: "38px", background: "none", border: "1px solid #2a2520", color: "#5a5248", fontSize: "18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>
-                {btn.label}
-              </button>
-            ))}
+            <button onClick={() => setIdx(p => Math.min(words.length - 1, p + 1))} style={NAV}>›</button>
+            <button onClick={() => setIdx(p => Math.min(words.length - 1, p + 50))} title="Forward 50" style={NAV}>»</button>
           </div>
 
-          {/* WPM */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", width: "100%" }}>
             <div style={{ fontSize: "11px", fontFamily: "monospace", letterSpacing: "0.15em", color: "#4a4540", textTransform: "uppercase" }}>
               <span style={{ color: ORP_COLOR }}>{wpm}</span> wpm
@@ -272,23 +319,78 @@ export default function RSVPReader() {
             <input type="range" min="60" max="1000" step="10" value={wpm} onChange={e => setWpm(Number(e.target.value))} style={{ width: "220px", accentColor: ORP_COLOR, cursor: "pointer" }} />
           </div>
 
-          {/* Progress bar */}
-          <div style={{ width: "100%", height: "3px", background: "#181614", position: "relative", cursor: "pointer", borderRadius: "2px" }}
-            onClick={e => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              setIdx(Math.round(((e.clientX - rect.left) / rect.width) * (words.length - 1)));
-            }}>
-            <div style={{ position: "absolute", left: 0, top: 0, height: "100%", borderRadius: "2px", width: `${progress}%`, background: `linear-gradient(90deg, ${ORP_COLOR}66, ${ORP_COLOR})`, transition: "width 0.1s linear" }} />
-            <div style={{ position: "absolute", top: "50%", left: `${progress}%`, transform: "translate(-50%, -50%)", width: "8px", height: "8px", borderRadius: "50%", background: ORP_COLOR }} />
+          {/* Progress bar with chapter markers */}
+          <div style={{ width: "100%", position: "relative" }}>
+            {/* Chapter tick marks */}
+            {chapters.map((ch, i) => {
+              const pct = (ch.wordIndex / (words.length - 1)) * 100;
+              return (
+                <div key={i} onClick={() => { setIdx(ch.wordIndex); setPlaying(false); }}
+                  title={ch.title}
+                  style={{ position: "absolute", top: "-6px", left: `${pct}%`, transform: "translateX(-50%)", width: "1px", height: "14px", background: "#3a3530", cursor: "pointer", zIndex: 2, transition: "background 0.15s" }}
+                  onMouseEnter={e => e.currentTarget.style.background = ORP_COLOR}
+                  onMouseLeave={e => e.currentTarget.style.background = "#3a3530"}
+                />
+              );
+            })}
+            <div style={{ width: "100%", height: "3px", background: "#181614", position: "relative", cursor: "pointer", borderRadius: "2px", marginTop: "8px" }}
+              onClick={e => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setIdx(Math.round(((e.clientX - rect.left) / rect.width) * (words.length - 1)));
+              }}>
+              <div style={{ position: "absolute", left: 0, top: 0, height: "100%", borderRadius: "2px", width: `${progress}%`, background: `linear-gradient(90deg, ${ORP_COLOR}66, ${ORP_COLOR})`, transition: "width 0.1s linear" }} />
+              <div style={{ position: "absolute", top: "50%", left: `${progress}%`, transform: "translate(-50%, -50%)", width: "8px", height: "8px", borderRadius: "50%", background: ORP_COLOR }} />
+            </div>
           </div>
 
           <div style={{ fontSize: "10px", color: "#252320", fontFamily: "monospace", letterSpacing: "0.08em" }}>
-            SPACE · ← → · CLICK BAR TO SEEK
+            SPACE · ← → · CLICK BAR TO SEEK {chapters.length > 0 ? "· TICK MARKS = CHAPTERS" : ""}
           </div>
         </div>
       </div>
 
-      {/* Modal */}
+      {/* ── Chapters Modal ── */}
+      {showChapters && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(6px)" }}
+          onClick={() => setShowChapters(false)}>
+          <div style={{ background: "#0d0c09", border: "1px solid #2a2520", padding: "36px", width: "min(500px, 92vw)", maxHeight: "70vh", display: "flex", flexDirection: "column", boxShadow: "0 40px 80px rgba(0,0,0,0.8)" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: "11px", letterSpacing: "0.2em", textTransform: "uppercase", color: ORP_COLOR, fontFamily: "monospace", marginBottom: "20px" }}>
+              Chapters — {chapters.length} found
+            </div>
+            <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px" }}>
+              {chapters.map((ch, i) => {
+                const isCurrent = currentChapter?.wordIndex === ch.wordIndex;
+                const pct = Math.round((ch.wordIndex / words.length) * 100);
+                return (
+                  <button key={i}
+                    onClick={() => { setIdx(ch.wordIndex); setPlaying(false); setShowChapters(false); }}
+                    style={{
+                      background: isCurrent ? "rgba(232,184,75,0.06)" : "none",
+                      border: `1px solid ${isCurrent ? "#3a3020" : "transparent"}`,
+                      color: isCurrent ? ORP_COLOR : "#6a6258",
+                      padding: "10px 14px", cursor: "pointer", textAlign: "left",
+                      fontSize: "13px", fontFamily: "Georgia, serif",
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      transition: "all 0.15s",
+                    }}
+                    onMouseEnter={e => { if (!isCurrent) { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; e.currentTarget.style.color = "#e0d6c8"; }}}
+                    onMouseLeave={e => { if (!isCurrent) { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "#6a6258"; }}}
+                  >
+                    <span>{ch.title}</span>
+                    <span style={{ fontSize: "10px", fontFamily: "monospace", color: "#3a3530", marginLeft: "12px", flexShrink: 0 }}>{pct}%</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: "16px", paddingTop: "16px", borderTop: "1px solid #1e1c18", fontSize: "10px", color: "#2e2c28", fontFamily: "monospace" }}>
+              ESC TO CLOSE
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Load Modal ── */}
       {showSetup && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(6px)" }}
           onClick={() => !loading && setShowSetup(false)}>
@@ -348,3 +450,6 @@ export default function RSVPReader() {
     </div>
   );
 }
+
+const NAV = { width: "38px", height: "38px", background: "none", border: "1px solid #2a2520", color: "#5a5248", fontSize: "18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" };
+const ICON = { width: "34px", height: "34px", background: "none", border: "none", color: "#3a3530", fontSize: "15px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" };
